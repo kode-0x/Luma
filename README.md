@@ -8,7 +8,7 @@ Luma is a document intelligence platform that lets you upload documents, ask nat
 
 ## How It Works
 
-![How-It-Works](assets\How-It-Works.png)
+![How-It-Works](assets/How-It-Works.png)
 
 1. Documents are parsed, split into overlapping chunks, embedded, and stored in a vector database.
 2. Queries run through hybrid retrieval (semantic + BM25), fused with Reciprocal Rank Fusion, and reranked with a cross-encoder.
