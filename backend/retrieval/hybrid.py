@@ -1,5 +1,7 @@
 """Hybrid retrieval combining semantic and lexical search with rank fusion."""
 
+from langchain_core.documents import Document as LCDocument
+
 from backend.core.logging import get_logger
 from backend.models.chunks import ScoredChunk
 
@@ -65,9 +67,7 @@ class HybridRetriever:
         sorted_ids = sorted(chunk_scores.keys(), key=lambda cid: chunk_scores[cid], reverse=True)
         top_ids = sorted_ids[:top_k]
 
-        results = [
-            ScoredChunk(chunk=chunk_map[chunk_id].chunk, score=chunk_scores[chunk_id]) for chunk_id in top_ids
-        ]
+        results = [ScoredChunk(chunk=chunk_map[chunk_id].chunk, score=chunk_scores[chunk_id]) for chunk_id in top_ids]
 
         logger.debug(
             "Hybrid fusion complete",
@@ -77,3 +77,38 @@ class HybridRetriever:
         )
 
         return results
+
+    def fuse_documents(
+        self,
+        semantic_docs: list[LCDocument],
+        lexical_docs: list[LCDocument],
+        top_k: int = 10,
+    ) -> list[LCDocument]:
+        """Fuse LangChain document lists using RRF (for chain-native workflows).
+
+        Args:
+            semantic_docs: Documents from vector similarity search.
+            lexical_docs: Documents from BM25 search.
+            top_k: Maximum number of fused results to return.
+
+        Returns:
+            Fused list of LangChain documents ordered by RRF score.
+        """
+        doc_scores: dict[str, float] = {}
+        doc_map: dict[str, LCDocument] = {}
+
+        for rank, doc in enumerate(semantic_docs):
+            doc_id = doc.metadata.get("chunk_id", str(rank))
+            rrf_score = self.semantic_weight * (1.0 / (self.rrf_k + rank + 1))
+            doc_scores[doc_id] = doc_scores.get(doc_id, 0.0) + rrf_score
+            doc_map[doc_id] = doc
+
+        for rank, doc in enumerate(lexical_docs):
+            doc_id = doc.metadata.get("chunk_id", f"lex_{rank}")
+            rrf_score = self.lexical_weight * (1.0 / (self.rrf_k + rank + 1))
+            doc_scores[doc_id] = doc_scores.get(doc_id, 0.0) + rrf_score
+            if doc_id not in doc_map:
+                doc_map[doc_id] = doc
+
+        sorted_ids = sorted(doc_scores.keys(), key=lambda did: doc_scores[did], reverse=True)
+        return [doc_map[did] for did in sorted_ids[:top_k]]

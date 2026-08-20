@@ -1,17 +1,16 @@
-"""BM25 lexical search over document chunks."""
+"""BM25 lexical search using LangChain's BM25Retriever."""
 
-import re
-
-from rank_bm25 import BM25Okapi
+from langchain_community.retrievers import BM25Retriever
+from langchain_core.documents import Document as LCDocument
 
 from backend.core.logging import get_logger
-from backend.models.chunks import DocumentChunk, ScoredChunk
+from backend.models.chunks import ChunkMetadata, DocumentChunk, ScoredChunk
 
 logger = get_logger(__name__)
 
 
 class BM25Searcher:
-    """BM25-based lexical search for keyword and exact-match retrieval.
+    """BM25-based lexical search using LangChain's BM25Retriever.
 
     Maintains an in-memory BM25 index that can be rebuilt when
     documents are added or removed. Complements semantic vector
@@ -20,9 +19,37 @@ class BM25Searcher:
 
     def __init__(self) -> None:
         """Initialize the BM25 searcher with empty state."""
-        self._index: BM25Okapi | None = None
+        self._retriever: BM25Retriever | None = None
         self._chunks: list[DocumentChunk] = []
-        self._tokenized_corpus: list[list[str]] = []
+
+    def _build_retriever(self, top_k: int = 10) -> None:
+        """Build or rebuild the BM25 retriever from stored chunks.
+
+        Args:
+            top_k: Default number of results to return.
+        """
+        if not self._chunks:
+            self._retriever = None
+            return
+
+        # Convert chunks to LangChain documents with metadata
+        lc_docs = [
+            LCDocument(
+                page_content=chunk.content,
+                metadata={
+                    "chunk_id": chunk.id,
+                    "document_id": chunk.metadata.document_id,
+                    "filename": chunk.metadata.filename,
+                    "page_number": chunk.metadata.page_number,
+                    "section": chunk.metadata.section,
+                    "chunk_index": chunk.metadata.chunk_index,
+                },
+            )
+            for chunk in self._chunks
+        ]
+
+        self._retriever = BM25Retriever.from_documents(lc_docs, k=top_k)
+        logger.info("Built BM25 retriever", chunk_count=len(self._chunks))
 
     def index_chunks(self, chunks: list[DocumentChunk]) -> None:
         """Build or rebuild the BM25 index from a list of chunks.
@@ -33,14 +60,7 @@ class BM25Searcher:
             chunks: Document chunks to index.
         """
         self._chunks = chunks
-        self._tokenized_corpus = [self._tokenize(chunk.content) for chunk in chunks]
-
-        if self._tokenized_corpus:
-            self._index = BM25Okapi(self._tokenized_corpus)
-            logger.info("Built BM25 index", chunk_count=len(chunks))
-        else:
-            self._index = None
-            logger.info("BM25 index is empty")
+        self._build_retriever()
 
     def add_chunks(self, chunks: list[DocumentChunk]) -> None:
         """Add chunks to the existing index by rebuilding it.
@@ -49,11 +69,7 @@ class BM25Searcher:
             chunks: Additional chunks to include.
         """
         self._chunks.extend(chunks)
-        self._tokenized_corpus.extend([self._tokenize(chunk.content) for chunk in chunks])
-
-        if self._tokenized_corpus:
-            self._index = BM25Okapi(self._tokenized_corpus)
-            logger.info("Rebuilt BM25 index after addition", total_chunks=len(self._chunks))
+        self._build_retriever()
 
     def remove_document(self, document_id: str) -> None:
         """Remove all chunks belonging to a document and rebuild the index.
@@ -65,8 +81,7 @@ class BM25Searcher:
         self._chunks = [c for c in self._chunks if c.metadata.document_id != document_id]
 
         if len(self._chunks) < original_count:
-            self._tokenized_corpus = [self._tokenize(chunk.content) for chunk in self._chunks]
-            self._index = BM25Okapi(self._tokenized_corpus) if self._tokenized_corpus else None
+            self._build_retriever()
             logger.info(
                 "Rebuilt BM25 index after removal",
                 document_id=document_id,
@@ -89,41 +104,45 @@ class BM25Searcher:
         Returns:
             List of ScoredChunk results ordered by descending BM25 score.
         """
-        if self._index is None or not self._chunks:
+        if self._retriever is None or not self._chunks:
             return []
 
-        tokenized_query = self._tokenize(query)
-        if not tokenized_query:
+        if not query.strip():
             return []
 
-        scores = self._index.get_scores(tokenized_query)
+        # Update k for this search
+        self._retriever.k = top_k * 2 if document_ids else top_k
 
-        # Pair chunks with scores and apply document filter
-        scored_pairs: list[tuple[DocumentChunk, float]] = []
-        for chunk, score in zip(self._chunks, scores, strict=True):
-            if score <= 0:
+        # Invoke the retriever
+        results = self._retriever.invoke(query)
+
+        # Convert back to ScoredChunks with document_id filtering
+        scored_chunks: list[ScoredChunk] = []
+        for rank, doc in enumerate(results):
+            metadata = doc.metadata
+            doc_id = metadata.get("document_id", "")
+
+            # Apply document filter
+            if document_ids and doc_id not in document_ids:
                 continue
-            if document_ids and chunk.metadata.document_id not in document_ids:
-                continue
-            scored_pairs.append((chunk, float(score)))
 
-        # Sort by score descending and limit
-        scored_pairs.sort(key=lambda x: x[1], reverse=True)
-        top_results = scored_pairs[:top_k]
+            chunk = DocumentChunk(
+                id=metadata.get("chunk_id", ""),
+                content=doc.page_content,
+                metadata=ChunkMetadata(
+                    document_id=doc_id,
+                    filename=metadata.get("filename", ""),
+                    page_number=metadata.get("page_number"),
+                    section=metadata.get("section"),
+                    chunk_index=metadata.get("chunk_index", 0),
+                ),
+            )
 
-        return [ScoredChunk(chunk=chunk, score=score) for chunk, score in top_results]
+            # BM25Retriever doesn't return scores, assign rank-based score
+            score = 1.0 / (rank + 1)
+            scored_chunks.append(ScoredChunk(chunk=chunk, score=score))
 
-    def _tokenize(self, text: str) -> list[str]:
-        """Tokenize text into lowercase words for BM25 indexing.
+            if len(scored_chunks) >= top_k:
+                break
 
-        Strips punctuation and splits on whitespace.
-
-        Args:
-            text: Raw text to tokenize.
-
-        Returns:
-            List of lowercase word tokens.
-        """
-        text = text.lower()
-        tokens = re.findall(r"\b\w+\b", text)
-        return tokens
+        return scored_chunks

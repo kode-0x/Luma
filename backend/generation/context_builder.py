@@ -1,5 +1,7 @@
 """Context builder: assembles retrieved chunks into a prompt-ready context block."""
 
+from langchain_core.documents import Document as LCDocument
+
 from backend.core.logging import get_logger
 from backend.models.chunks import ScoredChunk
 
@@ -64,4 +66,41 @@ class ContextBuilder:
 
         context = "\n\n".join(blocks)
         logger.debug("Built context", chunk_count=len(blocks), total_chars=len(context))
+        return context
+
+    def build_from_documents(self, documents: list[LCDocument]) -> str:
+        """Build context from LangChain documents (for chain-native workflows).
+
+        Args:
+            documents: LangChain documents with metadata containing source info.
+
+        Returns:
+            Formatted context string ready for inclusion in a prompt.
+        """
+        if not documents:
+            return ""
+
+        blocks: list[str] = []
+        total_chars = 0
+
+        for idx, doc in enumerate(documents, start=1):
+            metadata = doc.metadata
+            source_label = metadata.get("filename", "Unknown")
+            page_number = metadata.get("page_number")
+            if page_number:
+                source_label += f" (Page {page_number})"
+
+            block = f"[{idx}] Source: {source_label}\n{doc.page_content}"
+
+            if total_chars + len(block) > self.max_context_chars:
+                remaining = self.max_context_chars - total_chars
+                if remaining > len(block) // 2:
+                    blocks.append(block[:remaining])
+                break
+
+            blocks.append(block)
+            total_chars += len(block)
+
+        context = "\n\n".join(blocks)
+        logger.debug("Built context from documents", chunk_count=len(blocks), total_chars=len(context))
         return context

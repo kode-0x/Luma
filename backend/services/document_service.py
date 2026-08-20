@@ -11,6 +11,7 @@ from backend.ingestion.parser import DocumentParser
 from backend.models.documents import SUPPORTED_EXTENSIONS, Document, DocumentStatus
 from backend.repository.document_repository import DocumentRepository
 from backend.repository.vector_store import QdrantVectorStore
+from backend.retrieval.bm25_search import BM25Searcher
 
 logger = get_logger(__name__)
 
@@ -20,6 +21,7 @@ class DocumentService:
 
     Orchestrates the full document ingestion pipeline: validation,
     storage, parsing, chunking, embedding, and vector indexing.
+    Now also updates the BM25 index during ingestion and deletion.
     """
 
     def __init__(
@@ -29,6 +31,7 @@ class DocumentService:
         embedder: EmbeddingService,
         vector_store: QdrantVectorStore,
         repository: DocumentRepository,
+        bm25_searcher: BM25Searcher | None = None,
     ) -> None:
         """Initialize the document service with its dependencies.
 
@@ -38,12 +41,14 @@ class DocumentService:
             embedder: Embedding generation component.
             vector_store: Vector database for chunk storage/retrieval.
             repository: Document metadata and file storage.
+            bm25_searcher: Optional BM25 index for lexical search updates.
         """
         self._parser = parser
         self._chunker = chunker
         self._embedder = embedder
         self._vector_store = vector_store
         self._repository = repository
+        self._bm25_searcher = bm25_searcher
 
     async def upload_document(
         self,
@@ -149,6 +154,10 @@ class DocumentService:
             # Store in vector database
             self._vector_store.upsert_chunks(chunks)
 
+            # Update BM25 index for hybrid retrieval
+            if self._bm25_searcher is not None:
+                self._bm25_searcher.add_chunks(chunks)
+
             # Update status
             self._repository.update_status(
                 document_id,
@@ -195,7 +204,8 @@ class DocumentService:
     def delete_document(self, document_id: str) -> None:
         """Delete a document and all its associated data.
 
-        Removes the document metadata, uploaded file, and vector store chunks.
+        Removes the document metadata, uploaded file, vector store chunks,
+        and BM25 index entries.
 
         Args:
             document_id: The document to delete.
@@ -208,6 +218,10 @@ class DocumentService:
 
         # Remove from vector store
         self._vector_store.delete_by_document_id(document_id)
+
+        # Remove from BM25 index
+        if self._bm25_searcher is not None:
+            self._bm25_searcher.remove_document(document_id)
 
         # Remove metadata and file
         self._repository.delete(document_id)

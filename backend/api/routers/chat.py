@@ -131,13 +131,15 @@ async def list_models(
             completion_price = float(pricing.get("completion", "0") or "0")
             is_free = prompt_price == 0 and completion_price == 0
 
-            models.append({
-                "id": model_id,
-                "name": name,
-                "prompt_price": prompt_price,
-                "completion_price": completion_price,
-                "is_free": is_free,
-            })
+            models.append(
+                {
+                    "id": model_id,
+                    "name": name,
+                    "prompt_price": prompt_price,
+                    "completion_price": completion_price,
+                    "is_free": is_free,
+                }
+            )
 
         models.sort(key=lambda x: (not x["is_free"], x["prompt_price"], x["name"]))
 

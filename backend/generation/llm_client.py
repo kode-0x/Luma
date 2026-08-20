@@ -1,23 +1,23 @@
-"""LLM client for text generation via OpenRouter API."""
+"""LLM client using LangChain's ChatOpenAI with OpenRouter backend."""
 
-import json
 from collections.abc import AsyncGenerator
 
-import httpx
+from langchain_core.messages import AIMessageChunk, BaseMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 
 from backend.core.exceptions import GenerationError
 from backend.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 class LLMClient:
-    """Client for generating text using the OpenRouter API.
+    """LLM client using LangChain's ChatOpenAI pointed at OpenRouter.
 
-    OpenRouter provides a unified OpenAI-compatible interface to many
-    models, including free-tier options.
+    Provides both synchronous generation and async streaming via
+    LangChain's unified interface, with OpenRouter as the backend.
 
     Attributes:
         model_name: OpenRouter model identifier.
@@ -32,30 +32,83 @@ class LLMClient:
         max_tokens: int = 1024,
         temperature: float = 0.1,
     ) -> None:
+        """Initialize the LLM client.
+
+        Args:
+            model_name: OpenRouter model identifier.
+            api_token: OpenRouter API key.
+            max_tokens: Maximum tokens to generate.
+            temperature: Sampling temperature.
+        """
         self.model_name = model_name
         self.max_tokens = max_tokens
         self.temperature = temperature
         self._api_token = api_token
+        self._llm: ChatOpenAI | None = None
 
-    def _build_headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self._api_token}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/luma-ai",
-            "X-Title": "Luma",
-        }
+    def _get_llm(self, model_override: str | None = None) -> ChatOpenAI:
+        """Get or create a ChatOpenAI instance.
 
-    def _build_payload(self, system_prompt: str, user_prompt: str, stream: bool = False, model_override: str | None = None) -> dict:
-        return {
-            "model": model_override or self.model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-            "stream": stream,
-        }
+        Args:
+            model_override: Optional model name to override the default.
+
+        Returns:
+            Configured ChatOpenAI instance.
+        """
+        model = model_override or self.model_name
+
+        # If using default model, cache the instance
+        if model == self.model_name:
+            if self._llm is None:
+                self._llm = ChatOpenAI(
+                    model=self.model_name,
+                    openai_api_key=self._api_token,
+                    openai_api_base=OPENROUTER_BASE_URL,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    default_headers={
+                        "HTTP-Referer": "https://github.com/luma-ai",
+                        "X-Title": "Luma",
+                    },
+                )
+            return self._llm
+
+        # For overridden models, create a new instance
+        return ChatOpenAI(
+            model=model,
+            openai_api_key=self._api_token,
+            openai_api_base=OPENROUTER_BASE_URL,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            default_headers={
+                "HTTP-Referer": "https://github.com/luma-ai",
+                "X-Title": "Luma",
+            },
+        )
+
+    @property
+    def llm(self) -> ChatOpenAI:
+        """Get the default ChatOpenAI instance.
+
+        Returns:
+            The cached ChatOpenAI instance for the default model.
+        """
+        return self._get_llm()
+
+    def _build_messages(self, system_prompt: str, user_prompt: str) -> list[BaseMessage]:
+        """Build a message list from system and user prompts.
+
+        Args:
+            system_prompt: System instructions for the model.
+            user_prompt: User message with context and query.
+
+        Returns:
+            List of LangChain message objects.
+        """
+        return [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ]
 
     async def generate(self, system_prompt: str, user_prompt: str, model_override: str | None = None) -> str:
         """Generate a complete response from the LLM.
@@ -63,6 +116,7 @@ class LLMClient:
         Args:
             system_prompt: System instructions for the model.
             user_prompt: User message with context and query.
+            model_override: Optional model name to use instead of default.
 
         Returns:
             The generated text response.
@@ -70,48 +124,33 @@ class LLMClient:
         Raises:
             GenerationError: If the API call fails.
         """
-        payload = self._build_payload(system_prompt, user_prompt, stream=False, model_override=model_override)
+        messages = self._build_messages(system_prompt, user_prompt)
+        llm = self._get_llm(model_override)
 
         try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                response = await client.post(
-                    OPENROUTER_URL,
-                    headers=self._build_headers(),
-                    json=payload,
-                )
+            response = await llm.ainvoke(messages)
+            content = response.content
+            if isinstance(content, str):
+                return content.strip()
+            return str(content).strip()
 
-                if response.status_code != 200:
-                    error_detail = response.text[:500]
-                    if response.status_code == 402:
-                        raise GenerationError("OpenRouter credits exhausted or payment required.")
-                    if response.status_code == 429:
-                        raise GenerationError("Rate limit reached. Please wait a moment and try again.")
-                    raise GenerationError(
-                        f"LLM API returned status {response.status_code}: {error_detail}"
-                    )
-
-                result = response.json()
-                choices = result.get("choices", [])
-                if not choices:
-                    raise GenerationError("LLM returned empty choices")
-
-                return choices[0].get("message", {}).get("content", "").strip()
-
-        except httpx.TimeoutException as exc:
-            raise GenerationError("LLM API request timed out") from exc
-        except httpx.HTTPError as exc:
-            raise GenerationError(f"HTTP error during LLM generation: {exc}") from exc
-        except GenerationError:
-            raise
         except Exception as exc:
-            raise GenerationError(f"Unexpected error during generation: {exc}") from exc
+            error_msg = str(exc)
+            if "402" in error_msg:
+                raise GenerationError("OpenRouter credits exhausted or payment required.") from exc
+            if "429" in error_msg:
+                raise GenerationError("Rate limit reached. Please wait a moment and try again.") from exc
+            raise GenerationError(f"LLM generation failed: {error_msg}") from exc
 
-    async def generate_stream(self, system_prompt: str, user_prompt: str, model_override: str | None = None) -> AsyncGenerator[str, None]:
+    async def generate_stream(
+        self, system_prompt: str, user_prompt: str, model_override: str | None = None
+    ) -> AsyncGenerator[str, None]:
         """Stream generated tokens from the LLM.
 
         Args:
             system_prompt: System instructions for the model.
             user_prompt: User message with context and query.
+            model_override: Optional model name to use instead of default.
 
         Yields:
             Text chunks as they are generated.
@@ -119,41 +158,24 @@ class LLMClient:
         Raises:
             GenerationError: If the API call fails.
         """
-        payload = self._build_payload(system_prompt, user_prompt, stream=True, model_override=model_override)
+        messages = self._build_messages(system_prompt, user_prompt)
+        llm = self._get_llm(model_override)
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client, client.stream(
-                "POST",
-                OPENROUTER_URL,
-                headers=self._build_headers(),
-                json=payload,
-            ) as response:
-                if response.status_code != 200:
-                    body = await response.aread()
-                    raise GenerationError(
-                        f"LLM streaming API returned status {response.status_code}: {body.decode()[:500]}"
-                    )
-
-                async for line in response.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-
-                    data = line[len("data:"):].strip()
-                    if data == "[DONE]":
-                        break
-
-                    try:
-                        chunk = json.loads(data)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            yield content
-                    except (json.JSONDecodeError, IndexError, KeyError):
-                        continue
+            async for chunk in llm.astream(messages):
+                if isinstance(chunk, AIMessageChunk) and chunk.content:
+                    content = chunk.content
+                    if isinstance(content, str):
+                        yield content
+                    else:
+                        yield str(content)
 
         except GenerationError:
             raise
-        except httpx.TimeoutException as exc:
-            raise GenerationError("LLM streaming request timed out") from exc
         except Exception as exc:
-            raise GenerationError(f"Streaming generation failed: {exc}") from exc
+            error_msg = str(exc)
+            if "402" in error_msg:
+                raise GenerationError("OpenRouter credits exhausted or payment required.") from exc
+            if "429" in error_msg:
+                raise GenerationError("Rate limit reached. Please wait a moment and try again.") from exc
+            raise GenerationError(f"Streaming generation failed: {error_msg}") from exc

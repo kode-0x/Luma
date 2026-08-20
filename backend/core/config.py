@@ -57,8 +57,8 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 1024
     llm_temperature: float = 0.1
 
-    # Qdrant
-    qdrant_url: str = "http://localhost:6333"
+    # Qdrant (use ":memory:" for in-memory mode without a Qdrant server)
+    qdrant_url: str = ":memory:"
     qdrant_api_key: str = ""
     qdrant_collection_name: str = "luma_documents"
 

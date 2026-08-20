@@ -1,4 +1,6 @@
-"""Text embedding service using sentence-transformers."""
+"""Text embedding service using LangChain HuggingFace embeddings."""
+
+from langchain_huggingface import HuggingFaceEmbeddings
 
 from backend.core.exceptions import EmbeddingError
 from backend.core.logging import get_logger
@@ -7,9 +9,10 @@ logger = get_logger(__name__)
 
 
 class EmbeddingService:
-    """Generates vector embeddings for text using sentence-transformers.
+    """Generates vector embeddings for text using LangChain's HuggingFace integration.
 
-    Lazily loads the model on first use to avoid blocking application startup.
+    Wraps langchain_huggingface.HuggingFaceEmbeddings to provide a consistent
+    interface for both single-text and batch embedding operations.
 
     Attributes:
         model_name: Name of the sentence-transformers model.
@@ -22,28 +25,29 @@ class EmbeddingService:
             model_name: Hugging Face model identifier for sentence-transformers.
         """
         self.model_name = model_name
-        self._model: object | None = None
+        self._embeddings: HuggingFaceEmbeddings | None = None
 
     @property
-    def model(self) -> "SentenceTransformer":
-        """Lazily load and cache the sentence-transformer model.
+    def embeddings(self) -> HuggingFaceEmbeddings:
+        """Lazily initialize and return the LangChain embeddings model.
 
         Returns:
-            The loaded SentenceTransformer model instance.
+            The HuggingFaceEmbeddings instance.
 
         Raises:
             EmbeddingError: If the model fails to load.
         """
-        if self._model is None:
+        if self._embeddings is None:
             try:
-                from sentence_transformers import SentenceTransformer
-
                 logger.info("Loading embedding model", model=self.model_name)
-                self._model = SentenceTransformer(self.model_name)
+                self._embeddings = HuggingFaceEmbeddings(
+                    model_name=self.model_name,
+                    encode_kwargs={"normalize_embeddings": True},
+                )
                 logger.info("Embedding model loaded successfully")
             except Exception as exc:
                 raise EmbeddingError(f"Failed to load embedding model '{self.model_name}': {exc}") from exc
-        return self._model  # type: ignore[return-value]
+        return self._embeddings
 
     def embed_text(self, text: str) -> list[float]:
         """Generate an embedding vector for a single text string.
@@ -58,8 +62,7 @@ class EmbeddingService:
             EmbeddingError: If embedding generation fails.
         """
         try:
-            embedding = self.model.encode(text, normalize_embeddings=True)
-            return embedding.tolist()  # type: ignore[union-attr]
+            return self.embeddings.embed_query(text)
         except Exception as exc:
             raise EmbeddingError(f"Failed to embed text: {exc}") from exc
 
@@ -68,7 +71,7 @@ class EmbeddingService:
 
         Args:
             texts: List of texts to embed.
-            batch_size: Number of texts to process in each batch.
+            batch_size: Number of texts to process in each batch (used for chunked processing).
 
         Returns:
             List of embedding vectors, one per input text.
@@ -80,13 +83,13 @@ class EmbeddingService:
             return []
 
         try:
-            embeddings = self.model.encode(
-                texts,
-                batch_size=batch_size,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            )
-            return [embedding.tolist() for embedding in embeddings]  # type: ignore[union-attr]
+            # Process in batches to manage memory for large document sets
+            all_embeddings: list[list[float]] = []
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i : i + batch_size]
+                batch_embeddings = self.embeddings.embed_documents(batch)
+                all_embeddings.extend(batch_embeddings)
+            return all_embeddings
         except Exception as exc:
             raise EmbeddingError(f"Failed to embed batch of {len(texts)} texts: {exc}") from exc
 
@@ -97,11 +100,6 @@ class EmbeddingService:
         Returns:
             The dimensionality of the embedding vectors.
         """
-        return self.model.get_sentence_embedding_dimension()  # type: ignore[return-value, union-attr]
-
-
-# Type hint for lazy import
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from sentence_transformers import SentenceTransformer
+        # Embed a short text to determine dimension
+        sample = self.embed_text("test")
+        return len(sample)

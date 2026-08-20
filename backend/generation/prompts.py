@@ -1,4 +1,6 @@
-"""Prompt templates for RAG generation."""
+"""Prompt templates for RAG generation using LangChain."""
+
+from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate, SystemMessagePromptTemplate
 
 SYSTEM_PROMPT = """You are Luma, an AI document assistant. Your role is to answer questions \
 based ONLY on the provided evidence from the user's documents.
@@ -24,4 +26,12 @@ Answer the question using only the evidence above. Cite sources using [1], [2], 
 INSUFFICIENT_EVIDENCE_RESPONSE = (
     "I couldn't find enough evidence in the uploaded documents to answer this question reliably. "
     "Try rephrasing your question or uploading additional relevant documents."
+)
+
+# LangChain ChatPromptTemplate for use in chains
+RAG_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT),
+        HumanMessagePromptTemplate.from_template(USER_PROMPT_TEMPLATE),
+    ]
 )

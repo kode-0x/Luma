@@ -10,8 +10,8 @@ class Container:
     """Application dependency container.
 
     Lazily constructs and holds references to all major services,
-    repositories, and infrastructure components. Used as a single
-    source of truth for dependency resolution at application startup.
+    repositories, and infrastructure components. Uses LangChain,
+    LangGraph, and related libraries for AI/ML operations.
 
     Attributes:
         settings: Application configuration.
@@ -33,13 +33,15 @@ class Container:
         self._chunker: object | None = None
         self._bm25_searcher: object | None = None
         self._reranker: object | None = None
+        self._hybrid_retriever: object | None = None
         self._llm_client: object | None = None
+        self._rag_graph: object | None = None
         self._document_service: object | None = None
         self._chat_service: object | None = None
 
     @property
     def embedding_service(self) -> "EmbeddingService":
-        """Get or create the embedding service."""
+        """Get or create the embedding service (LangChain HuggingFaceEmbeddings)."""
         if self._embedding_service is None:
             from backend.ingestion.embedder import EmbeddingService
 
@@ -51,7 +53,7 @@ class Container:
 
     @property
     def vector_store(self) -> "QdrantVectorStore":
-        """Get or create the vector store client."""
+        """Get or create the vector store client (LangChain Qdrant integration)."""
         if self._vector_store is None:
             from backend.repository.vector_store import QdrantVectorStore
 
@@ -60,6 +62,7 @@ class Container:
                 api_key=self.settings.qdrant_api_key or None,
                 collection_name=self.settings.qdrant_collection_name,
                 embedding_dimension=self.settings.embedding_dimension,
+                embeddings=self.embedding_service.embeddings,
             )
             logger.info("Initialized vector store", url=self.settings.qdrant_url)
         return self._vector_store  # type: ignore[return-value]
@@ -88,7 +91,7 @@ class Container:
 
     @property
     def chunker(self) -> "TextChunker":
-        """Get or create the text chunker."""
+        """Get or create the text chunker (LangChain RecursiveCharacterTextSplitter)."""
         if self._chunker is None:
             from backend.ingestion.chunker import TextChunker
 
@@ -101,7 +104,7 @@ class Container:
 
     @property
     def bm25_searcher(self) -> "BM25Searcher":
-        """Get or create the BM25 search component."""
+        """Get or create the BM25 search component (LangChain BM25Retriever)."""
         if self._bm25_searcher is None:
             from backend.retrieval.bm25_search import BM25Searcher
 
@@ -111,7 +114,7 @@ class Container:
 
     @property
     def reranker(self) -> "CrossEncoderReranker":
-        """Get or create the cross-encoder reranker."""
+        """Get or create the cross-encoder reranker (LangChain HuggingFaceCrossEncoder)."""
         if self._reranker is None:
             from backend.retrieval.reranker import CrossEncoderReranker
 
@@ -120,8 +123,18 @@ class Container:
         return self._reranker  # type: ignore[return-value]
 
     @property
+    def hybrid_retriever(self) -> "HybridRetriever":
+        """Get or create the hybrid RRF retriever."""
+        if self._hybrid_retriever is None:
+            from backend.retrieval.hybrid import HybridRetriever
+
+            self._hybrid_retriever = HybridRetriever()
+            logger.info("Initialized hybrid retriever")
+        return self._hybrid_retriever  # type: ignore[return-value]
+
+    @property
     def llm_client(self) -> "LLMClient":
-        """Get or create the LLM client."""
+        """Get or create the LLM client (LangChain ChatOpenAI via OpenRouter)."""
         if self._llm_client is None:
             from backend.generation.llm_client import LLMClient
 
@@ -135,6 +148,25 @@ class Container:
         return self._llm_client  # type: ignore[return-value]
 
     @property
+    def rag_graph(self) -> "RAGGraph":
+        """Get or create the LangGraph RAG workflow."""
+        if self._rag_graph is None:
+            from backend.generation.rag_graph import RAGGraph
+
+            self._rag_graph = RAGGraph(
+                embedder=self.embedding_service,
+                vector_store=self.vector_store,
+                bm25_searcher=self.bm25_searcher,
+                hybrid_retriever=self.hybrid_retriever,
+                reranker=self.reranker,
+                llm_client=self.llm_client,
+                retrieval_top_k=self.settings.retrieval_top_k,
+                rerank_top_k=self.settings.rerank_top_k,
+            )
+            logger.info("Initialized LangGraph RAG workflow")
+        return self._rag_graph  # type: ignore[return-value]
+
+    @property
     def document_service(self) -> "DocumentService":
         """Get or create the document service."""
         if self._document_service is None:
@@ -146,24 +178,19 @@ class Container:
                 embedder=self.embedding_service,
                 vector_store=self.vector_store,
                 repository=self.document_repository,
+                bm25_searcher=self.bm25_searcher,
             )
             logger.info("Initialized document service")
         return self._document_service  # type: ignore[return-value]
 
     @property
     def chat_service(self) -> "ChatService":
-        """Get or create the chat service."""
+        """Get or create the chat service (backed by LangGraph RAG workflow)."""
         if self._chat_service is None:
             from backend.services.chat_service import ChatService
 
             self._chat_service = ChatService(
-                embedder=self.embedding_service,
-                vector_store=self.vector_store,
-                bm25_searcher=self.bm25_searcher,
-                reranker=self.reranker,
-                llm_client=self.llm_client,
-                retrieval_top_k=self.settings.retrieval_top_k,
-                rerank_top_k=self.settings.rerank_top_k,
+                rag_graph=self.rag_graph,
             )
             logger.info("Initialized chat service")
         return self._chat_service  # type: ignore[return-value]
@@ -174,12 +201,14 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from backend.generation.llm_client import LLMClient
+    from backend.generation.rag_graph import RAGGraph
     from backend.ingestion.chunker import TextChunker
     from backend.ingestion.embedder import EmbeddingService
     from backend.ingestion.parser import DocumentParser
     from backend.repository.document_repository import DocumentRepository
     from backend.repository.vector_store import QdrantVectorStore
     from backend.retrieval.bm25_search import BM25Searcher
+    from backend.retrieval.hybrid import HybridRetriever
     from backend.retrieval.reranker import CrossEncoderReranker
     from backend.services.chat_service import ChatService
     from backend.services.document_service import DocumentService

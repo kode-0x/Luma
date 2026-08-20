@@ -4,28 +4,38 @@ version = "0.1.0"
 description = "Evidence-Based AI Document Intelligence Platform"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi==0.115.6",
-    "uvicorn[standard]==0.34.0",
-    "pydantic==2.10.4",
-    "pydantic-settings==2.7.1",
-    "python-multipart==0.0.20",
-    "httpx==0.28.1",
-    "qdrant-client==1.13.3",
-    "sentence-transformers==3.3.1",
-    "rank-bm25==0.2.2",
-    "huggingface-hub==0.27.1",
-    "pypdf==5.1.0",
-    "python-docx==1.1.2",
-    "structlog==24.4.0",
+    "fastapi>=0.115.6",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.12.0",
+    "pydantic-settings>=2.7.1",
+    "python-multipart>=0.0.20",
+    "httpx>=0.28.1",
+    "structlog>=24.4.0",
+    # LangChain ecosystem
+    "langchain>=0.3.14",
+    "langchain-community>=0.3.14",
+    "langchain-openai>=0.3.0",
+    "langchain-huggingface>=0.1.2",
+    "langchain-qdrant>=0.2.0",
+    "langgraph>=0.2.60",
+    # Vector DB & retrieval
+    "qdrant-client>=1.13.3",
+    "rank-bm25>=0.2.2",
+    # Embeddings & reranking
+    "sentence-transformers>=3.3.1",
+    "huggingface-hub>=0.27.1",
+    # Document parsing
+    "pypdf>=5.1.0",
+    "python-docx>=1.1.2",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "ruff==0.8.6",
-    "mypy==1.14.1",
-    "pytest==8.3.4",
-    "pytest-asyncio==0.25.0",
-    "pytest-cov==6.0.0",
+    "ruff>=0.8.6",
+    "mypy>=1.14.1",
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=6.0.0",
 ]
 
 [build-system]
@@ -74,6 +84,13 @@ module = [
     "sentence_transformers.*",
     "pypdf.*",
     "docx.*",
+    "langchain.*",
+    "langchain_community.*",
+    "langchain_openai.*",
+    "langchain_huggingface.*",
+    "langchain_qdrant.*",
+    "langchain_core.*",
+    "langgraph.*",
 ]
 ignore_missing_imports = true
 

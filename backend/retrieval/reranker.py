@@ -1,4 +1,7 @@
-"""Cross-encoder reranking for refining retrieval results."""
+"""Cross-encoder reranking using LangChain's HuggingFaceCrossEncoder."""
+
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+from langchain_core.documents import Document as LCDocument
 
 from backend.core.logging import get_logger
 from backend.models.chunks import ScoredChunk
@@ -9,7 +12,7 @@ DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 
 class CrossEncoderReranker:
-    """Reranks retrieved chunks using a cross-encoder model.
+    """Reranks retrieved chunks using a cross-encoder model via LangChain.
 
     Cross-encoders jointly encode the query and each candidate passage,
     producing more accurate relevance scores than bi-encoder similarity.
@@ -17,29 +20,29 @@ class CrossEncoderReranker:
     the top candidates from the initial retrieval stage.
     """
 
-    def __init__(self, model_name: str = DEFAULT_RERANKER_MODEL) -> None:
+    def __init__(self, model_name: str = DEFAULT_RERANKER_MODEL, top_n: int = 5) -> None:
         """Initialize the reranker.
 
         Args:
             model_name: Hugging Face model identifier for the cross-encoder.
+            top_n: Default number of top results to return.
         """
         self.model_name = model_name
-        self._model: object | None = None
+        self._top_n = top_n
+        self._cross_encoder: HuggingFaceCrossEncoder | None = None
 
     @property
-    def model(self) -> "CrossEncoder":
+    def cross_encoder(self) -> HuggingFaceCrossEncoder:
         """Lazily load and cache the cross-encoder model.
 
         Returns:
-            The loaded CrossEncoder model instance.
+            The loaded HuggingFaceCrossEncoder instance.
         """
-        if self._model is None:
-            from sentence_transformers import CrossEncoder
-
+        if self._cross_encoder is None:
             logger.info("Loading cross-encoder reranker model", model=self.model_name)
-            self._model = CrossEncoder(self.model_name)
+            self._cross_encoder = HuggingFaceCrossEncoder(model_name=self.model_name)
             logger.info("Cross-encoder reranker model loaded")
-        return self._model  # type: ignore[return-value]
+        return self._cross_encoder
 
     def rerank(self, query: str, chunks: list[ScoredChunk], top_k: int = 5) -> list[ScoredChunk]:
         """Rerank chunks by computing cross-encoder relevance scores.
@@ -55,11 +58,9 @@ class CrossEncoderReranker:
         if not chunks:
             return []
 
-        # Prepare query-passage pairs for the cross-encoder
-        pairs: list[list[str]] = [[query, chunk.chunk.content] for chunk in chunks]
-
-        # Score all pairs
-        scores = self.model.predict(pairs)  # type: ignore[union-attr]
+        # Score pairs using the cross-encoder directly for score access
+        pairs = [[query, chunk.chunk.content] for chunk in chunks]
+        scores = self.cross_encoder.score(pairs)
 
         # Pair scores with chunks
         scored_results: list[tuple[ScoredChunk, float]] = []
@@ -83,9 +84,31 @@ class CrossEncoderReranker:
 
         return results
 
+    def rerank_documents(self, query: str, documents: list[LCDocument], top_k: int = 5) -> list[LCDocument]:
+        """Rerank LangChain documents using the cross-encoder directly.
 
-# Type hint for lazy import
-from typing import TYPE_CHECKING
+        This method is useful for integration with LangChain chains and pipelines.
 
-if TYPE_CHECKING:
-    from sentence_transformers import CrossEncoder
+        Args:
+            query: The user's original query.
+            documents: LangChain documents to rerank.
+            top_k: Number of top results to return.
+
+        Returns:
+            Reranked list of LangChain documents.
+        """
+        if not documents:
+            return []
+
+        # Score all query-document pairs
+        pairs = [[query, doc.page_content] for doc in documents]
+        scores = self.cross_encoder.score(pairs)
+
+        # Pair scores with documents and sort
+        scored_docs = sorted(
+            zip(documents, scores, strict=True),
+            key=lambda x: float(x[1]),
+            reverse=True,
+        )
+
+        return [doc for doc, _ in scored_docs[:top_k]]
